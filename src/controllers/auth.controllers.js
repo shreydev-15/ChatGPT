@@ -27,6 +27,7 @@ async function registerUser(req,res){
     res.cookie("token", token)
     res.status(201).json({
         message: "User registered Succussfully",
+        token,
         user: {
             email: user.email,
             fullname : user.fullname,
@@ -57,6 +58,7 @@ async function loginuser(req,res) {
     
         res.status(201).json({
         message: "User looged in Succussfully",
+        token,
         user: {
             email: user.email,
             fullname : user.fullname,
