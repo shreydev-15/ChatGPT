@@ -2,6 +2,7 @@ const userModel = require("../models/user.models.js")
 const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
 
+// Create a user account, hash its password, and issue a JWT.
 async function registerUser(req,res){
     const { fullname: {firstname, lastname}, email, password} = req.body
 
@@ -36,6 +37,7 @@ async function registerUser(req,res){
     })
 }
 
+// Verify login credentials and issue a new JWT.
 async function loginuser(req,res) {
     const {email, password} = req.body;
     const user = await userModel.findOne({email})

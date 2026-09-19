@@ -1,5 +1,6 @@
 const mongoose = require('mongoose')
 
+// Define messages that belong to users and chats.
 const messageSchema = new mongoose.Schema({
     user:{
         type: mongoose.Schema.Types.ObjectId,
@@ -22,6 +23,7 @@ const messageSchema = new mongoose.Schema({
     }
 }, {timestamps: true})
 
+// Create the MongoDB model used to store conversation history.
 const messageModel  = mongoose.model("message", messageSchema)
 
 module.exports = messageModel

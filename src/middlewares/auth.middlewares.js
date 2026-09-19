@@ -1,12 +1,16 @@
 const userModel = require('../models/user.models')
 const jwt = require('jsonwebtoken')
 
+// Verify the request JWT and attach the matching user to the request.
 async function userauth(req,res,next){
-    const {token} = req.cookies;
+    const authorization = req.headers?.authorization;
+    const bearerToken = authorization?.startsWith("Bearer ")
+        ? authorization.slice(7)
+        : authorization;
+    const token = req.cookies?.token || bearerToken;
 
     if(!token){
         return res.status(401).json({message: "Unauthorized access"})
-
     }
 
     try{

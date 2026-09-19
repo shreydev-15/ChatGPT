@@ -1,5 +1,6 @@
 const mongoose = require('mongoose')
 
+// Define chat ownership, title, and activity metadata.
 const chatSchema = new mongoose.Schema({
     user:{
         type: mongoose.Schema.Types.ObjectId,
@@ -16,5 +17,6 @@ const chatSchema = new mongoose.Schema({
     }
 }, {timestamps: true})
 
+// Create the MongoDB model used for chat records.
 const chatModel = mongoose.model("chat", chatSchema)
 module.exports = chatModel

@@ -6,9 +6,11 @@ const chatModel = require("../models/chat.models");
 const generateResponse = require('../services/ai.service')
 const messageModel = require('../models/message.model')
 
+// Create the Socket.IO server and configure socket authentication and events.
 function initSocketServer(httpServer) {
     const io = new Server(httpServer, {});
 
+    // Authenticate each socket using a cookie, auth token, or Bearer token.
     io.use(async (socket, next) => {
         try {
             const cookies = cookie.parseCookie(
@@ -50,35 +52,65 @@ function initSocketServer(httpServer) {
         }
     });
 
+    // Handle authenticated clients and their AI conversation messages.
     io.on("connection", (socket) => {
         console.log("Socket connected:", socket.id);
 
+        // Save the user message, send recent history to Gemini, and emit the reply.
         socket.on('ai-message', async (messagePayload, acknowledgement) => {
+            console.log('[DEBUG] ai-message event received');
+            console.log('[DEBUG] Raw payload:', JSON.stringify(messagePayload));
+            console.log('[DEBUG] Payload type:', typeof messagePayload);
+
             try {
+                // Handle case where Postman sends payload as a JSON string
+                if (typeof messagePayload === 'string') {
+                    try {
+                        messagePayload = JSON.parse(messagePayload);
+                        console.log('[DEBUG] Parsed string payload into object');
+                    } catch (e) {
+                        console.log('[DEBUG] Payload is a plain string, not JSON');
+                    }
+                }
+
                 const content = messagePayload?.content ?? messagePayload?.message;
+                console.log('[DEBUG] Extracted content:', content);
 
                 if (typeof content !== 'string' || !content.trim()) {
+                    console.log('[DEBUG] Content validation failed');
                     return socket.emit('ai-error', {
                         message: 'Message content is required. Send content or message.'
                     })
                 }
 
                 if (!messagePayload.chat) {
+                    console.log('[DEBUG] Chat ID missing');
                     return socket.emit('ai-error', {
                         message: 'Chat ID is required'
                     })
                 }
 
+                const mongoose = require('mongoose');
+                if (!mongoose.Types.ObjectId.isValid(messagePayload.chat)) {
+                    console.log('[DEBUG] Invalid Chat ID format:', messagePayload.chat);
+                    return socket.emit('ai-error', {
+                        message: 'Invalid Chat ID format. Must be a 24-character hex string.'
+                    })
+                }
+
+                console.log('[DEBUG] Looking up chat:', messagePayload.chat, 'for user:', socket.user._id);
                 const chat = await chatModel.findOne({
                     _id: messagePayload.chat,
                     user: socket.user._id
                 });
 
                 if (!chat) {
+                    console.log('[DEBUG] Chat not found in DB');
                     return socket.emit('ai-error', {
                         message: 'Chat not found'
                     })
                 }
+                console.log('[DEBUG] Chat found:', chat._id);
 
                 await messageModel.create({
                     chat: chat._id,
@@ -86,6 +118,7 @@ function initSocketServer(httpServer) {
                     content,
                     role: "user"
                 })
+                console.log('[DEBUG] User message saved to DB');
 
                 const chatHistory = await messageModel.find({
                     chat: chat._id
@@ -97,8 +130,10 @@ function initSocketServer(httpServer) {
                     role: item.role,
                     parts: [{ text: item.content }]
                 }));
+                console.log('[DEBUG] Sending', contents.length, 'messages to Gemini');
 
                 const response = await generateResponse(contents)
+                console.log('[DEBUG] Gemini responded:', response.substring(0, 100), '...');
 
                 await messageModel.create({
                     chat: chat._id,
@@ -106,6 +141,7 @@ function initSocketServer(httpServer) {
                     content: response,
                     role: "model"
                 })
+                console.log('[DEBUG] AI message saved to DB');
 
                 await chatModel.updateOne(
                     { _id: chat._id },
@@ -118,14 +154,15 @@ function initSocketServer(httpServer) {
                     chat: chat._id
                 };
 
-                console.log('Sending AI response:', response.length, 'characters');
+                console.log('[DEBUG] Emitting ai-response:', response.length, 'characters');
                 socket.emit('ai-response', responsePayload);
 
                 if (typeof acknowledgement === 'function') {
                     acknowledgement(responsePayload);
                 }
             } catch (error) {
-                console.error('AI response error:', error)
+                console.error('[DEBUG] ERROR in ai-message handler:', error.message);
+                console.error('[DEBUG] Full error:', error);
                 const errorPayload = {
                     message: error.message || 'Unable to generate an AI response'
                 };
