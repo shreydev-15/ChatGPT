@@ -3,8 +3,10 @@ const authMiddleware = require('../middlewares/auth.middlewares')
 const chatController = require('../controllers/chat.controllers')
 const router = express.Router()
 
-// Create chats only for authenticated users.
+// Chat endpoints
 router.post('/', authMiddleware.userauth, chatController.createChat)
 router.get('/', authMiddleware.userauth, chatController.getChats)
+router.get('/:chatId/messages', authMiddleware.userauth, chatController.getMessages)
+router.delete('/:chatId', authMiddleware.userauth, chatController.deleteChat)
 
 module.exports = router   

@@ -10,7 +10,12 @@ const {createMemory, queryMemory} = require('../services/vector.service')
 
 // Create the Socket.IO server and configure socket authentication and events.
 function initSocketServer(httpServer) {
-    const io = new Server(httpServer, {});
+    const io = new Server(httpServer, {
+        cors: {
+            origin: true,
+            credentials: true
+        }
+    });
 
     // Authenticate each socket using a cookie, auth token, or Bearer token.
     io.use(async (socket, next) => {

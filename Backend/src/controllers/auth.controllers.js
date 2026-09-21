@@ -73,7 +73,31 @@ async function loginuser(req,res) {
 
 } 
 
+// Get currently authenticated user details.
+async function getMe(req, res) {
+    if (!req.user) {
+        return res.status(401).json({ message: "Unauthorized" });
+    }
+    res.status(200).json({
+        user: {
+            email: req.user.email,
+            fullname: req.user.fullname,
+            _id: req.user._id
+        }
+    });
+}
+
+// Log out user by clearing the auth token cookie.
+async function logoutUser(req, res) {
+    res.clearCookie("token");
+    res.status(200).json({
+        message: "Logged out successfully"
+    });
+}
+
 module.exports = {
     registerUser,
-    loginuser
+    loginuser,
+    getMe,
+    logoutUser
 }
