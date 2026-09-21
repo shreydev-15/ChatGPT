@@ -1,10 +1,12 @@
+const mongoose = require("mongoose");
 const { Server } = require("socket.io");
 const cookie = require("cookie");
 const jwt = require("jsonwebtoken");
 const userModel = require("../models/user.models");
 const chatModel = require("../models/chat.models");
-const generateResponse = require('../services/ai.service')
+const {generateResponse, generateVector} = require('../services/ai.service')
 const messageModel = require('../models/message.model')
+const {createMemory, queryMemory} = require('../services/vector.service')
 
 // Create the Socket.IO server and configure socket authentication and events.
 function initSocketServer(httpServer) {
@@ -56,46 +58,41 @@ function initSocketServer(httpServer) {
     io.on("connection", (socket) => {
         console.log("Socket connected:", socket.id);
 
-        // Save the user message, send recent history to Gemini, and emit the reply.
+        // Handle incoming AI messages following the optimized 10-step flow.
         socket.on('ai-message', async (messagePayload, acknowledgement) => {
             console.log('[DEBUG] ai-message event received');
             console.log('[DEBUG] Raw payload:', JSON.stringify(messagePayload));
-            console.log('[DEBUG] Payload type:', typeof messagePayload);
 
             try {
-                // Handle case where Postman sends payload as a JSON string
+                // Handle case where payload arrives as a JSON string
                 if (typeof messagePayload === 'string') {
                     try {
                         messagePayload = JSON.parse(messagePayload);
-                        console.log('[DEBUG] Parsed string payload into object');
                     } catch (e) {
                         console.log('[DEBUG] Payload is a plain string, not JSON');
                     }
                 }
 
                 const content = messagePayload?.content ?? messagePayload?.message;
-                console.log('[DEBUG] Extracted content:', content);
-
                 if (typeof content !== 'string' || !content.trim()) {
                     console.log('[DEBUG] Content validation failed');
                     return socket.emit('ai-error', {
                         message: 'Message content is required. Send content or message.'
-                    })
+                    });
                 }
 
                 if (!messagePayload.chat) {
                     console.log('[DEBUG] Chat ID missing');
                     return socket.emit('ai-error', {
                         message: 'Chat ID is required'
-                    })
+                    });
                 }
 
-                const mongoose = require('mongoose');
                 if (!mongoose.Types.ObjectId.isValid(messagePayload.chat)) {
                     console.log('[DEBUG] Invalid Chat ID format:', messagePayload.chat);
                     return socket.emit('ai-error', {
                         message: 'Invalid Chat ID format. Must be a 24-character hex string.'
-                    })
+                    });
                 }
 
                 console.log('[DEBUG] Looking up chat:', messagePayload.chat, 'for user:', socket.user._id);
@@ -108,18 +105,71 @@ function initSocketServer(httpServer) {
                     console.log('[DEBUG] Chat not found in DB');
                     return socket.emit('ai-error', {
                         message: 'Chat not found'
-                    })
+                    });
                 }
                 console.log('[DEBUG] Chat found:', chat._id);
 
-                await messageModel.create({
-                    chat: chat._id,
-                    user: socket.user._id,
-                    content,
-                    role: "user"
-                })
-                console.log('[DEBUG] User message saved to DB');
+                // =========================================================================
+                // 1. User message save in DB  &  2. Generate vector for user message
+                // Executed together concurrently via Promise.all for optimization
+                // =========================================================================
+                console.log('[FLOW] Executing Steps 1 & 2 concurrently (save user message & generate vector)');
+                const [userMessage, userVector] = await Promise.all([
+                    messageModel.create({
+                        chat: chat._id,
+                        user: socket.user._id,
+                        content,
+                        role: "user"
+                    }),
+                    generateVector(content)
+                ]);
+                console.log('[FLOW] Step 1 complete: User message saved in DB (ID:', userMessage._id, ')');
+                console.log('[FLOW] Step 2 complete: Vector generated for user message');
 
+                // =========================================================================
+                // 3. Save user message in Pinecone
+                // =========================================================================
+                console.log('[FLOW] Executing Step 3: Save user message in Pinecone');
+                await createMemory({
+                    vectors: userVector,
+                    messageId: userMessage._id.toString(),
+                    metadata: {
+                        chat: chat._id.toString(),
+                        user: socket.user._id.toString(),
+                        role: "user",
+                        text: content
+                    }
+                });
+                console.log('[FLOW] Step 3 complete: User message saved in Pinecone');
+
+                // =========================================================================
+                // 4. Query Pinecone for related memories
+                // =========================================================================
+                console.log('[FLOW] Executing Step 4: Query Pinecone for related memories');
+                let relatedMemories = [];
+                try {
+                    const memoryData = await queryMemory({
+                        queryVector: userVector,
+                        limit: 5,
+                        metadata: {
+                            user: socket.user._id.toString()
+                        }
+                    });
+
+                    if (memoryData?.matches && memoryData.matches.length > 0) {
+                        relatedMemories = memoryData.matches
+                            .filter(match => match.id !== userMessage._id.toString() && match.metadata?.text)
+                            .map(match => match.metadata.text);
+                    }
+                    console.log(`[FLOW] Step 4 complete: Found ${relatedMemories.length} related memories`);
+                } catch (memError) {
+                    console.warn('[FLOW] Step 4 warning: Failed to query Pinecone memories (continuing without memories):', memError.message);
+                }
+
+                // =========================================================================
+                // 5. Get chat history from DB
+                // =========================================================================
+                console.log('[FLOW] Executing Step 5: Get chat history from DB');
                 const chatHistory = await messageModel.find({
                     chat: chat._id
                 }).sort({ createdAt: -1 }).limit(10).lean();
@@ -130,36 +180,75 @@ function initSocketServer(httpServer) {
                     role: item.role,
                     parts: [{ text: item.content }]
                 }));
-                console.log('[DEBUG] Sending', contents.length, 'messages to Gemini');
+                console.log(`[FLOW] Step 5 complete: Retrieved ${contents.length} recent messages for context`);
 
-                const response = await generateResponse(contents)
-                console.log('[DEBUG] Gemini responded:', response.substring(0, 100), '...');
+                // =========================================================================
+                // 6. Generate response from AI
+                // =========================================================================
+                console.log('[FLOW] Executing Step 6: Generate response from AI');
+                let systemInstruction = undefined;
+                if (relatedMemories.length > 0) {
+                    systemInstruction = `You are a helpful AI assistant. Here are relevant memories from past conversations with this user that may provide helpful context:\n${relatedMemories.map((mem, idx) => `[Memory ${idx + 1}]: ${mem}`).join('\n')}\nUse these memories when relevant.`;
+                }
 
-                await messageModel.create({
-                    chat: chat._id,
-                    user: socket.user._id,
-                    content: response,
-                    role: "model"
-                })
-                console.log('[DEBUG] AI message saved to DB');
+                const response = await generateResponse(contents, systemInstruction);
+                console.log('[FLOW] Step 6 complete: AI response generated successfully');
 
-                await chatModel.updateOne(
-                    { _id: chat._id },
-                    { $set: { lastActivity: new Date() } }
-                );
-
+                // =========================================================================
+                // 7. Send AI response to user
+                // =========================================================================
+                console.log('[FLOW] Executing Step 7: Send AI response to user');
                 const responsePayload = {
                     content: response,
                     message: response,
                     chat: chat._id
                 };
 
-                console.log('[DEBUG] Emitting ai-response:', response.length, 'characters');
                 socket.emit('ai-response', responsePayload);
 
                 if (typeof acknowledgement === 'function') {
                     acknowledgement(responsePayload);
                 }
+                console.log('[FLOW] Step 7 complete: Response emitted to client');
+
+                // =========================================================================
+                // 8. Save AI response in DB  &  9. Generate vector for AI response
+                // Merged together concurrently via Promise.all for optimization
+                // =========================================================================
+                console.log('[FLOW] Executing Steps 8 & 9 merged together (save AI response in DB & generate vector)');
+                const [aiMessage, aiVector] = await Promise.all([
+                    messageModel.create({
+                        chat: chat._id,
+                        user: socket.user._id,
+                        content: response,
+                        role: "model"
+                    }),
+                    generateVector(response)
+                ]);
+                console.log('[FLOW] Step 8 complete: AI response saved in DB (ID:', aiMessage._id, ')');
+                console.log('[FLOW] Step 9 complete: Vector generated for AI response');
+
+                await chatModel.updateOne(
+                    { _id: chat._id },
+                    { $set: { lastActivity: new Date() } }
+                );
+
+                // =========================================================================
+                // 10. Save AI message in Pinecone
+                // =========================================================================
+                console.log('[FLOW] Executing Step 10: Save AI message in Pinecone');
+                await createMemory({
+                    vectors: aiVector,
+                    messageId: aiMessage._id.toString(),
+                    metadata: {
+                        chat: chat._id.toString(),
+                        user: socket.user._id.toString(),
+                        role: "model",
+                        text: response
+                    }
+                });
+                console.log('[FLOW] Step 10 complete: AI message saved in Pinecone');
+
             } catch (error) {
                 console.error('[DEBUG] ERROR in ai-message handler:', error.message);
                 console.error('[DEBUG] Full error:', error);
@@ -177,4 +266,4 @@ function initSocketServer(httpServer) {
     });
 }
 
-module.exports = initSocketServer;
+module.exports = initSocketServer
