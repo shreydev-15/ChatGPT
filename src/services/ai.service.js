@@ -13,7 +13,7 @@ const ai = new GoogleGenAI({
 });
 
 // Send recent conversation history to Gemini and return its text response.
-async function generateResponse(contents){
+async function generateResponse(contents, systemInstruction = null){
     if (!Array.isArray(contents) || contents.length === 0) {
         throw new TypeError("AI message content is required");
     }
@@ -24,10 +24,18 @@ async function generateResponse(contents){
     for (const model of modelsToTry) {
         try {
             console.log(`Attempting Gemini model: ${model}`);
-            const response = await ai.models.generateContent({
+            const payload = {
                 model,
                 contents
-            });
+            };
+
+            if (systemInstruction) {
+                payload.config = {
+                    systemInstruction
+                };
+            }
+
+            const response = await ai.models.generateContent(payload);
 
             const text = response.text;
 
@@ -44,4 +52,19 @@ async function generateResponse(contents){
     throw lastError || new Error("All Gemini models failed to generate a response");
 }
 
-module.exports = generateResponse
+async function generateVector(content){
+    const response = await ai.models.embedContent({
+        model: "gemini-embedding-001",
+        contents: content,
+        config: {
+            outputDimensionality: 768
+        }
+    });
+
+    return response.embeddings?.[0]?.values || response.embedding?.values || [];
+}
+
+module.exports = {
+    generateResponse,
+    generateVector
+}
