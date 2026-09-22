@@ -2,10 +2,11 @@ import { io } from 'socket.io-client';
 import { getAuthToken } from './api';
 
 let socket = null;
+const backendUrl = import.meta.env.VITE_BACKEND_URL?.replace(/\/$/, '');
 
 export function getSocket() {
   if (!socket) {
-    socket = io({
+    socket = io(backendUrl || undefined, {
       path: '/socket.io',
       withCredentials: true,
       autoConnect: false,

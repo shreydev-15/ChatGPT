@@ -11,6 +11,8 @@ connectDB();
 initsocketserver(httpserver)
 
 // Start the server and listen for client requests.
-httpserver.listen(3214, ()=>{
-    console.log('Server is running on port 3214');
+const port = process.env.PORT || 3214;
+
+httpserver.listen(port, ()=>{
+    console.log(`Server is running on port ${port}`);
 })
